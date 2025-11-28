@@ -73,11 +73,18 @@ configure_agent() {
     sudo sed -i "s/^Server=.*/Server=$ZBX_SERVER/" $CONF
     sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER:$ZBX_SERVER_PORT/" $CONF
     sudo sed -i "s/^Hostname=.*/Hostname=$(hostname)/" $CONF
-    sudo sed -i "s/^HostMetadata=.*/HostMetadata=$HOST_METADATA/" $CONF
+
+    # Handle HostMetadata
+    if grep -q "^HostMetadata=" "$CONF"; then
+        sudo sed -i "s/^HostMetadata=.*/HostMetadata=$HOST_METADATA/" "$CONF"
+    else
+        echo "HostMetadata=$HOST_METADATA" | sudo tee -a "$CONF" >/dev/null
+    fi
 
     sudo systemctl enable zabbix-agent2
     sudo systemctl restart zabbix-agent2
 }
+
 
 # ============================
 #  RUN STEPS
