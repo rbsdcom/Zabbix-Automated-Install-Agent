@@ -2,100 +2,59 @@
 
 ZBX_SERVER="186.233.102.2"
 HOST_METADATA="LINUX"
-AGENT_VERSION="7.0"
+ZBX_VERSION="7.0"
 
-# Detecta distro
-detect_distro() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        DISTRO=$ID
-        VERSION=$VERSION_ID
-    else
-        echo "❌ Não foi possível detectar o sistema operacional."
-        exit 1
-    fi
-}
+# Detecta versão real do Ubuntu
+UBUNTU_VERSION=$(lsb_release -rs)
 
-# Remove qualquer versão anterior (agent ou agent2)
-remove_old_agents() {
-    echo "🧹 Removendo versões antigas do Zabbix..."
+if [[ "$UBUNTU_VERSION" == "22.04" ]]; then
+    REPO_PKG="zabbix-release_${ZBX_VERSION}-3+ubuntu22.04_all.deb"
+elif [[ "$UBUNTU_VERSION" == "20.04" ]]; then
+    REPO_PKG="zabbix-release_${ZBX_VERSION}-3+ubuntu20.04_all.deb"
+elif [[ "$UBUNTU_VERSION" == "24.04" ]]; then
+    REPO_PKG="zabbix-release_${ZBX_VERSION}-3+ubuntu24.04_all.deb"
+else
+    echo "❌ Ubuntu version $UBUNTU_VERSION not supported automatically."
+    exit 1
+fi
 
-    case "$DISTRO" in
-        ubuntu|debian)
-            sudo apt remove -y zabbix-agent zabbix-agent2 2>/dev/null
-            ;;
-        centos|rhel|almalinux|rocky)
-            sudo yum remove -y zabbix-agent zabbix-agent2 2>/dev/null
-            ;;
-    esac
-}
+REPO_URL="https://repo.zabbix.com/zabbix/${ZBX_VERSION}/ubuntu/pool/main/z/zabbix-release/${REPO_PKG}"
 
-# Adiciona repositório correto
-add_repo() {
-    echo "📦 Adicionando repositório da Zabbix..."
+echo "=== Installing Zabbix Repository ==="
+echo "Ubuntu detected: $UBUNTU_VERSION"
+echo "Downloading: $REPO_URL"
 
-    case "$DISTRO" in
-        ubuntu|debian)
-            wget https://repo.zabbix.com/zabbix/${AGENT_VERSION}/${DISTRO}/pool/main/z/zabbix-release/zabbix-release_${AGENT_VERSION}-3+${DISTRO}${VERSION}_all.deb
-            sudo dpkg -i zabbix-release_${AGENT_VERSION}-3+${DISTRO}${VERSION}_all.deb
-            sudo apt update
-            ;;
-        centos|rhel|almalinux|rocky)
-            sudo rpm -Uvh https://repo.zabbix.com/zabbix/${AGENT_VERSION}/rhel/${VERSION}/x86_64/zabbix-release-${AGENT_VERSION}-1.el${VERSION}.noarch.rpm
-            sudo yum clean all
-            ;;
-        *)
-            echo "❌ Distro não suportada automaticamente: $DISTRO"
-            exit 1
-            ;;
-    esac
-}
+wget $REPO_URL -O $REPO_PKG
+sudo dpkg -i $REPO_PKG
+sudo apt update
 
-# Instala o agent2
-install_agent() {
-    echo "📥 Instalando Zabbix Agent 2..."
+echo "=== Removing previous Zabbix Agents ==="
+sudo apt remove -y zabbix-agent zabbix-agent2 || true
 
-    case "$DISTRO" in
-        ubuntu|debian)
-            sudo apt install -y zabbix-agent2
-            ;;
-        centos|rhel|almalinux|rocky)
-            sudo yum install -y zabbix-agent2
-            ;;
-    esac
-}
+echo "=== Installing Zabbix Agent 2 ==="
+sudo apt install -y zabbix-agent2
 
-# Configura agent2
-configure_agent() {
-    CONF="/etc/zabbix/zabbix_agent2.conf"
+echo "=== Configuring Zabbix Agent 2 ==="
+CONF="/etc/zabbix/zabbix_agent2.conf"
 
-    echo "⚙️ Configurando Agent..."
-    
-    sudo sed -i "s/^Server=.*/Server=$ZBX_SERVER/" $CONF
-    sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER/" $CONF
-    sudo sed -i "s/^# HostMetadata=.*/HostMetadata=$HOST_METADATA/" $CONF
-}
+sudo sed -i "s/^Server=.*/Server=$ZBX_SERVER/" $CONF
+sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER/" $CONF
 
-# Inicia serviço
-start_agent() {
-    echo "🚀 Iniciando serviço do agent..."
-    sudo systemctl enable zabbix-agent2
-    sudo systemctl restart zabbix-agent2
+# Se não existir HostMetadata, adiciona
+if grep -q "^HostMetadata=" "$CONF"; then
+    sudo sed -i "s/^HostMetadata=.*/HostMetadata=$HOST_METADATA/" $CONF
+else
+    echo "HostMetadata=$HOST_METADATA" | sudo tee -a $CONF > /dev/null
+fi
 
-    echo "🌟 Status:"
-    sudo systemctl status zabbix-agent2 --no-pager
-}
+echo "=== Starting Agent ==="
+sudo systemctl enable zabbix-agent2
+sudo systemctl restart zabbix-agent2
 
-### EXECUÇÃO ###
-
-detect_distro
-remove_old_agents
-add_repo
-install_agent
-configure_agent
-start_agent
+echo "=== Done! ==="
+systemctl status zabbix-agent2 --no-pager
 
 echo ""
-echo "✅ Instalado com sucesso!"
+echo "🎉 Installation completed!"
 echo "Server: $ZBX_SERVER"
-echo "Metadata: $HOST_METADATA"
+echo "HostMetadata: $HOST_METADATA"
