@@ -5,7 +5,7 @@
 # ============================
 ZBX_SERVER="186.233.102.2"
 HOST_METADATA="PROD_LINUX"
-ZBX_SERVER_PORT=10051
+
 
 # ============================
 #  OS DETECTION
