@@ -1,252 +1,111 @@
-#!/usr/bin/env bash
-# Auto-Install-ZabbixAgent2-Linux.sh
-# Cross-distro installer for Zabbix Agent 2 (7.0.x)
-# - Detects distro
-# - Removes old zabbix-agent / zabbix-agent2
-# - Installs official Zabbix repo for distro
-# - Installs zabbix-agent2
-# - Configures Server / ServerActive / Hostname / HostMetadata
-# - Enables and starts service
-#
-# Default HostMetadata: LINUX
-# Usage: sudo ./Auto-Install-ZabbixAgent2-Linux.sh <ZBX_SERVER> [ZBX_VERSION]
-# Example: sudo ./Auto-Install-ZabbixAgent2-Linux.sh zabbix.example.com 7.0.21
+#!/bin/bash
 
-set -euo pipefail
-IFS=$'\n\t'
+set -e
 
-# -----------------------
-# Parameters / Defaults
-# -----------------------
-if [ $# -lt 1 ]; then
-  echo "Usage: $0 <ZBX_SERVER> [ZBX_VERSION]"
-  exit 2
-fi
+ZABBIX_SERVER="186.233.102.2"
+HOST_METADATA="LINUX"
 
-ZBX_SERVER="$1"
-ZBX_VERSION="${2:-7.0.21}"   # default if not provided
-HOST_METADATA="${HOST_METADATA:-LINUX}"
-ZBX_BRANCH="7.0"
-
-LOGFILE="/var/log/zabbix_auto_installer.log"
-exec > >(tee -a "$LOGFILE") 2>&1
-
-echo "=== Zabbix Agent2 Auto Installer ==="
-echo "Server: $ZBX_SERVER"
-echo "Version: $ZBX_VERSION (branch: $ZBX_BRANCH)"
-echo "HostMetadata: $HOST_METADATA"
-echo "Log: $LOGFILE"
-echo ""
-
-# -----------------------
-# Sanity checks
-# -----------------------
-if [ "$(id -u)" -ne 0 ]; then
-  echo "❌ Run this script as root (sudo)."
-  exit 3
-fi
+echo "=== Detecting Linux distribution ==="
 
 if [ -f /etc/os-release ]; then
-  . /etc/os-release
-  OS_ID=${ID,,}          # normalize lowercase
-  OS_VER=${VERSION_ID}
+    . /etc/os-release
+    DISTRO=$ID
+    VERSION=$VERSION_ID
 else
-  echo "❌ /etc/os-release not found. Cannot detect distro."
-  exit 4
+    echo "Unable to detect OS."
+    exit 1
 fi
 
-echo "Detected OS: $OS_ID $OS_VER"
+echo "Detected: $DISTRO $VERSION"
 
-# -----------------------
-# Helpers
-# -----------------------
-run_cmd() {
-  echo "+ $*"
-  "$@"
-}
+###############################################
+# 1. REMOVE OLD AGENTS (zabbix-agent e agent2)
+###############################################
 
-# -----------------------
-# Remove old Zabbix agent(s)
-# -----------------------
-remove_old_zabbix() {
-  echo ""
-  echo "➡ Removing any old Zabbix installations..."
+echo "=== Removing previous Zabbix versions ==="
 
-  # Stop services if exist
-  systemctl stop zabbix-agent zabbix-agent2 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop zabbix-agent 2>/dev/null || true
+    systemctl stop zabbix-agent2 2>/dev/null || true
+fi
 
-  if command -v apt >/dev/null 2>&1; then
-    apt-get remove -y zabbix-agent zabbix-agent2 zabbix-release || true
-    apt-get purge -y zabbix-agent zabbix-agent2 || true
-    rm -f /etc/apt/sources.list.d/zabbix.list /tmp/zabbix-release.deb || true
-    apt-get autoremove -y || true
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf remove -y zabbix-agent zabbix-agent2 zabbix-release || true
-  elif command -v yum >/dev/null 2>&1; then
-    yum remove -y zabbix-agent zabbix-agent2 zabbix-release || true
-  elif command -v zypper >/dev/null 2>&1; then
-    zypper remove -y zabbix-agent zabbix-agent2 zabbix-release || true
-  else
-    echo "⚠ No known package manager to remove packages. Attempting filesystem cleanup..."
-  fi
+if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+    apt remove -y zabbix-agent zabbix-agent2 2>/dev/null || true
+elif [ "$DISTRO" = "centos" ] || [ "$DISTRO" = "rhel" ] || [ "$DISTRO" = "rocky" ] || [ "$DISTRO" = "almalinux" ]; then
+    yum remove -y zabbix-agent zabbix-agent2 2>/dev/null || true
+fi
 
-  rm -rf /etc/zabbix /var/log/zabbix /var/run/zabbix /var/lib/zabbix || true
+###############################################
+# 2. INSTALL REPO — AUTO-DETECT CORRECT .DEB
+###############################################
 
-  echo "✔ Old Zabbix artifacts removed (if any)."
-}
+echo "=== Installing Zabbix Repository ==="
 
-# -----------------------
-# Install repo & agent
-# -----------------------
-install_repo_and_agent() {
-  echo ""
-  echo "➡ Installing Zabbix repo and agent for $OS_ID $OS_VER..."
+if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+    BASE_URL="https://repo.zabbix.com/zabbix/7.0/$DISTRO/pool/main/z/zabbix-release/"
 
-  case "$OS_ID" in
-    ubuntu|debian)
-      # Map ubuntu version for repo filename (use generic 22.04 file if not exact available)
-      UB_REL=$(lsb_release -rs 2>/dev/null || echo "$OS_VER")
-      # Use the generic zabbix-release package for the branch (works across minor versions)
-      REPO_DEB="/tmp/zabbix-release_${ZBX_BRANCH}-6+ubuntu${UB_REL}_all.deb"
-      REPO_URL="https://repo.zabbix.com/zabbix/${ZBX_BRANCH}/ubuntu/pool/main/z/zabbix-release/$(basename $REPO_DEB)"
-      echo "Downloading $REPO_URL"
-      if ! curl -fsSL -o "$REPO_DEB" "$REPO_URL"; then
-        # fallback to ubuntu22.04 package
-        REPO_DEB="/tmp/zabbix-release_${ZBX_BRANCH}-6+ubuntu22.04_all.deb"
-        REPO_URL="https://repo.zabbix.com/zabbix/${ZBX_BRANCH}/ubuntu/pool/main/z/zabbix-release/$(basename $REPO_DEB)"
-        echo "Fallback to $REPO_URL"
-        curl -fsSL -o "$REPO_DEB" "$REPO_URL"
-      fi
-      dpkg -i "$REPO_DEB" || apt-get -f install -y
-      apt-get update -y
-      apt-get install -y zabbix-agent2
-      ;;
+    echo "Fetching available zabbix-release files..."
 
-    rhel|centos|rocky|almalinux)
-      # For RHEL family, use major version number
-      MAJOR_VER="${OS_VER%%.*}"
-      RPM_URL="https://repo.zabbix.com/zabbix/${ZBX_BRANCH}/rhel/${MAJOR_VER}/x86_64/zabbix-release-${ZBX_BRANCH}-6.el${MAJOR_VER}.noarch.rpm"
-      echo "Downloading $RPM_URL"
-      curl -fsSL -o /tmp/zabbix-release.rpm "$RPM_URL" || { echo "❌ Failed to download repo RPM"; exit 10; }
-      rpm -Uvh /tmp/zabbix-release.rpm
-      if command -v dnf >/dev/null 2>&1; then
-        dnf install -y zabbix-agent2
-      else
-        yum install -y zabbix-agent2
-      fi
-      ;;
+    # Lista todos os pacotes disponíveis e pega o que combina com a versão
+    RELEASE_FILE=$(curl -s $BASE_URL | grep -o "zabbix-release_7.0-[0-9]\++$DISTRO$VERSION\(_\|\.\)all\.deb" | head -n 1)
 
-    amzn)
-      # Amazon Linux 2 -> use RHEL8 packages
-      RPM_URL="https://repo.zabbix.com/zabbix/${ZBX_BRANCH}/rhel/8/x86_64/zabbix-release-${ZBX_BRANCH}-6.el8.noarch.rpm"
-      echo "Downloading $RPM_URL"
-      curl -fsSL -o /tmp/zabbix-release.rpm "$RPM_URL"
-      rpm -Uvh /tmp/zabbix-release.rpm
-      yum install -y zabbix-agent2
-      ;;
+    if [ -z "$RELEASE_FILE" ]; then
+        echo "ERROR: No matching zabbix-release package found for $DISTRO $VERSION"
+        exit 1
+    fi
 
-    sles|opensuse*|suse)
-      MAJOR_VER="${OS_VER%%.*}"
-      RPM_URL="https://repo.zabbix.com/zabbix/${ZBX_BRANCH}/sles/${MAJOR_VER}/x86_64/zabbix-release-${ZBX_BRANCH}-6.sles${MAJOR_VER}.noarch.rpm"
-      echo "Downloading $RPM_URL"
-      curl -fsSL -o /tmp/zabbix-release.rpm "$RPM_URL"
-      rpm -Uvh /tmp/zabbix-release.rpm
-      zypper refresh
-      zypper install -y zabbix-agent2
-      ;;
+    DOWNLOAD_URL="${BASE_URL}${RELEASE_FILE}"
 
-    *)
-      echo "❌ Unsupported OS: $OS_ID"
-      exit 11
-      ;;
-  esac
+    echo "Downloading: $DOWNLOAD_URL"
+    curl -s -o /tmp/zabbix-release.deb "$DOWNLOAD_URL"
 
-  echo "✔ Repo and package installation attempted."
-}
+    dpkg -i /tmp/zabbix-release.deb
+    apt update -y
 
-# -----------------------
-# Configure agent (safe: insert or update)
-# -----------------------
-configure_agent() {
-  CONF="/etc/zabbix/zabbix_agent2.conf"
-  if [ ! -f "$CONF" ]; then
-    echo "❌ Config file not found: $CONF"
-    exit 12
-  fi
+elif [ "$DISTRO" = "centos" ] || [ "$DISTRO" = "rhel" ] || [ "$DISTRO" = "rocky" ] || [ "$DISTRO" = "almalinux" ]; then
+    rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/7/x86_64/zabbix-release-7.0-4.el7.noarch.rpm
+    yum clean all
+else
+    echo "Unsupported distribution."
+    exit 1
+fi
 
-  echo ""
-  echo "➡ Configuring $CONF"
+###############################################
+# 3. INSTALL Zabbix Agent2
+###############################################
 
-  # Backup
-  cp -a "$CONF" "${CONF}.orig-$(date +%s)" || true
+echo "=== Installing Zabbix Agent 2 ==="
 
-  # Ensure Server
-  if grep -qE "^Server=" "$CONF"; then
-    sed -i "s#^Server=.*#Server=${ZBX_SERVER}#g" "$CONF"
-  else
-    echo "Server=${ZBX_SERVER}" >> "$CONF"
-  fi
+if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+    apt install -y zabbix-agent2
+else
+    yum install -y zabbix-agent2
+fi
 
-  # Ensure ServerActive
-  if grep -qE "^ServerActive=" "$CONF"; then
-    sed -i "s#^ServerActive=.*#ServerActive=${ZBX_SERVER}#g" "$CONF"
-  else
-    echo "ServerActive=${ZBX_SERVER}" >> "$CONF"
-  fi
+###############################################
+# 4. CONFIGURE AGENT2 WITH METADATA
+###############################################
 
-  # Hostname
-  MYHOST="$(hostname)"
-  if grep -qE "^Hostname=" "$CONF"; then
-    sed -i "s#^Hostname=.*#Hostname=${MYHOST}#g" "$CONF"
-  else
-    echo "Hostname=${MYHOST}" >> "$CONF"
-  fi
+echo "=== Configuring Zabbix Agent 2 ==="
 
-  # HostMetadata (insert if not present)
-  if grep -qE "^HostMetadata=" "$CONF"; then
-    sed -i "s#^HostMetadata=.*#HostMetadata=${HOST_METADATA}#g" "$CONF"
-  else
-    echo "HostMetadata=${HOST_METADATA}" >> "$CONF"
-  fi
+CONF="/etc/zabbix/zabbix_agent2.conf"
 
-  # Optionally enable HostMetadataItem? (leave commented)
+sed -i "s/^Server=.*/Server=$ZABBIX_SERVER/" $CONF
+sed -i "s/^ServerActive=.*/ServerActive=$ZABBIX_SERVER/" $CONF
 
-  # Ensure permissions
-  chmod 644 "$CONF" || true
+if grep -q "^HostMetadata=" "$CONF"; then
+    sed -i "s/^HostMetadata=.*/HostMetadata=$HOST_METADATA/" $CONF
+else
+    echo "HostMetadata=$HOST_METADATA" >> $CONF
+fi
 
-  echo "✔ Configuration applied."
-}
+###############################################
+# 5. START SERVICE
+###############################################
 
-# -----------------------
-# Start and validate service
-# -----------------------
-start_and_validate() {
-  echo ""
-  echo "➡ Enabling and starting zabbix-agent2 service..."
-  systemctl daemon-reload || true
-  systemctl enable --now zabbix-agent2 || true
+echo "=== Starting Zabbix Agent 2 ==="
+systemctl enable zabbix-agent2
+systemctl restart zabbix-agent2
 
-  sleep 2
-  if systemctl is-active --quiet zabbix-agent2; then
-    echo "✅ zabbix-agent2 is active."
-  else
-    echo "❌ zabbix-agent2 failed to start. See: journalctl -u zabbix-agent2 -xe"
-    exit 20
-  fi
-}
-
-# -----------------------
-# RUN
-# -----------------------
-remove_old_zabbix
-install_repo_and_agent
-configure_agent
-start_and_validate
-
-echo ""
-echo "🎉 Installation finished successfully."
-echo "Hostname: $(hostname)"
-echo "HostMetadata: ${HOST_METADATA}"
-echo "Zabbix Server: ${ZBX_SERVER}"
-echo "Log: ${LOGFILE}"
-exit 0
+echo "=== Zabbix Agent 2 Installed and Running ==="
+systemctl status zabbix-agent2 --no-pager
