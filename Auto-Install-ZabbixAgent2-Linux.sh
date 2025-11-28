@@ -71,7 +71,7 @@ configure_agent() {
     CONF="/etc/zabbix/zabbix_agent2.conf"
 
     sudo sed -i "s/^Server=.*/Server=$ZBX_SERVER/" $CONF
-    sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER:$ZBX_SERVER_PORT/" $CONF
+    sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER/" $CONF
     sudo sed -i "s/^Hostname=.*/Hostname=$(hostname)/" $CONF
      sudo sed -i "s/^HostMetadata=.*/HostMetadata=$HOST_METADATA/" $CONF
 
