@@ -1,60 +1,97 @@
 #!/bin/bash
 
-ZBX_SERVER="186.233.102.2"
+# ============================
+#  CONFIGURATION
+# ============================
+ZBX_SERVER="zabbix.example.com"
 HOST_METADATA="LINUX"
-ZBX_VERSION="7.0"
 
-# Detecta versão real do Ubuntu
-UBUNTU_VERSION=$(lsb_release -rs)
 
-if [[ "$UBUNTU_VERSION" == "22.04" ]]; then
-    REPO_PKG="zabbix-release_${ZBX_VERSION}-3+ubuntu22.04_all.deb"
-elif [[ "$UBUNTU_VERSION" == "20.04" ]]; then
-    REPO_PKG="zabbix-release_${ZBX_VERSION}-3+ubuntu20.04_all.deb"
-elif [[ "$UBUNTU_VERSION" == "24.04" ]]; then
-    REPO_PKG="zabbix-release_${ZBX_VERSION}-3+ubuntu24.04_all.deb"
+# ============================
+#  OS DETECTION
+# ============================
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID=$ID
+    OS_VER=$VERSION_ID
 else
-    echo "❌ Ubuntu version $UBUNTU_VERSION not supported automatically."
+    echo "❌ Unable to detect OS. /etc/os-release is missing."
     exit 1
 fi
 
-REPO_URL="https://repo.zabbix.com/zabbix/${ZBX_VERSION}/ubuntu/pool/main/z/zabbix-release/${REPO_PKG}"
+echo "➡️ Detected OS: $OS_ID $OS_VER"
 
-echo "=== Installing Zabbix Repository ==="
-echo "Ubuntu detected: $UBUNTU_VERSION"
-echo "Downloading: $REPO_URL"
+# ============================
+# INSTALLATION
+# ============================
 
-wget $REPO_URL -O $REPO_PKG
-sudo dpkg -i $REPO_PKG
-sudo apt update
+install_zabbix_repo() {
+    case "$OS_ID" in
+        ubuntu|debian)
+            wget https://repo.zabbix.com/zabbix/7.0/$OS_ID/pool/main/z/zabbix-release/zabbix-release_7.0-2+$OS_ID${OS_VER}_all.deb
+            sudo dpkg -i zabbix-release_7.0-2+$OS_ID${OS_VER}_all.deb
+            sudo apt update
+        ;;
+        rhel|centos|rocky|almalinux)
+            sudo rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/$OS_VER/x86_64/zabbix-release-7.0-2.el$OS_VER.noarch.rpm
+        ;;
+        amzn)
+            sudo rpm -Uvh https://repo.zabbix.com/zabbix/7.0/rhel/8/x86_64/zabbix-release-7.0-2.el8.noarch.rpm
+        ;;
+        sles|opensuse*)
+            sudo rpm -Uvh https://repo.zabbix.com/zabbix/7.0/sles/$OS_VER/x86_64/zabbix-release-7.0-2.sles$OS_VER.noarch.rpm
+        ;;
+        *)
+            echo "❌ Unsupported OS: $OS_ID"
+            exit 1
+        ;;
+    esac
+}
 
-echo "=== Removing previous Zabbix Agents ==="
-sudo apt remove -y zabbix-agent zabbix-agent2 || true
+install_agent() {
+    if command -v apt >/dev/null 2>&1; then
+        sudo apt install -y zabbix-agent2
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y zabbix-agent2
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y zabbix-agent2
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper install -y zabbix-agent2
+    else
+        echo "❌ No compatible package manager found."
+        exit 1
+    fi
+}
 
-echo "=== Installing Zabbix Agent 2 ==="
-sudo apt install -y zabbix-agent2
+# ============================
+#  CONFIGURATION
+# ============================
 
-echo "=== Configuring Zabbix Agent 2 ==="
-CONF="/etc/zabbix/zabbix_agent2.conf"
+configure_agent() {
+    CONF="/etc/zabbix/zabbix_agent2.conf"
 
-sudo sed -i "s/^Server=.*/Server=$ZBX_SERVER/" $CONF
-sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER/" $CONF
-
-# Se não existir HostMetadata, adiciona
-if grep -q "^HostMetadata=" "$CONF"; then
+    sudo sed -i "s/^Server=.*/Server=$ZBX_SERVER/" $CONF
+    sudo sed -i "s/^ServerActive=.*/ServerActive=$ZBX_SERVER/" $CONF
+    sudo sed -i "s/^Hostname=.*/Hostname=$(hostname)/" $CONF
     sudo sed -i "s/^HostMetadata=.*/HostMetadata=$HOST_METADATA/" $CONF
-else
-    echo "HostMetadata=$HOST_METADATA" | sudo tee -a $CONF > /dev/null
-fi
 
-echo "=== Starting Agent ==="
-sudo systemctl enable zabbix-agent2
-sudo systemctl restart zabbix-agent2
+    sudo systemctl enable zabbix-agent2
+    sudo systemctl restart zabbix-agent2
+}
 
-echo "=== Done! ==="
-systemctl status zabbix-agent2 --no-pager
+# ============================
+#  RUN STEPS
+# ============================
 
-echo ""
-echo "🎉 Installation completed!"
-echo "Server: $ZBX_SERVER"
-echo "HostMetadata: $HOST_METADATA"
+echo "➡️ Installing Zabbix repository..."
+install_zabbix_repo
+
+echo "➡️ Installing Zabbix Agent..."
+install_agent
+
+echo "➡️ Configuring Zabbix Agent..."
+configure_agent
+
+echo "✅ Installation complete!"
+echo "HostMetadata = $HOST_METADATA"
+echo "ServerActive = $ZBX_SERVER:$ZBX_SERVER_PORT"
