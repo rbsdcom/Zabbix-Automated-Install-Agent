@@ -3,7 +3,7 @@
 # ============================
 #  CONFIGURATION
 # ============================
-ZBX_SERVER="zabbix.example.com"
+ZBX_SERVER="186.233.102.2"
 HOST_METADATA="LINUX"
 
 
